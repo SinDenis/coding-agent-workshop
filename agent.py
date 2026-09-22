@@ -1,16 +1,20 @@
-"""Step 06: the agent loop replaces manually repeated model calls."""
+"""Step 07: explicit stop reasons, validation, bounded tools and readable errors."""
 
 import argparse
 import json
 import os
 import readline  # noqa: F401 - enables Unicode-aware terminal editing for input()
+import signal
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent
+MAX_OUTPUT = 12000
 MODEL = "deepseek/deepseek-v4-flash-0731"
 SYSTEM = """Ты кодинговый агент в учебном проекте. Отвечай по-русски.
 Изучи файлы перед правками. Используй shell для работы с проектом.
@@ -55,39 +59,94 @@ def ask_model(messages):
         },
         timeout=60,
     )
-    response.raise_for_status()
-    return response.json()["choices"][0]["message"]
+    if response.is_error:
+        raise RuntimeError(
+            f"OpenRouter HTTP {response.status_code}. Проверьте ключ, баланс и модель."
+        )
+    try:
+        choice = response.json()["choices"][0]
+        message = choice["message"]
+        reason = choice["finish_reason"]
+        calls = message.get("tool_calls") or []
+        if message.get("role") != "assistant":
+            raise ValueError("Ожидалось сообщение assistant")
+        if reason not in ("stop", "tool_calls"):
+            raise RuntimeError(f"Ответ не завершён нормально: finish_reason={reason}")
+        if reason == "tool_calls" and not calls:
+            raise ValueError("Нет ожидаемых вызовов инструментов")
+        if not calls and not (message.get("content") or "").strip():
+            raise ValueError("Модель вернула пустой ответ")
+        ids = [call["id"] for call in calls]
+        if len(set(ids)) != len(ids) or any(not isinstance(i, str) or not i for i in ids):
+            raise ValueError("Неверные идентификаторы вызовов")
+        for call in calls:
+            if call["type"] != "function" or not isinstance(call["function"], dict):
+                raise ValueError("Неверный формат вызова")
+        # Preserve reasoning_details and all assistant fields for the next request.
+        return message
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise RuntimeError("Некорректный ответ OpenRouter; выполнение остановлено") from exc
 
 
 def show_response(response):
     print(json.dumps(response, ensure_ascii=False, indent=2))
 
 
-def run_shell(command, workspace):
+def run_shell(command, workspace, timeout=30):
     # This is NOT a sandbox. cwd is a starting directory, not an access boundary.
-    result = subprocess.run(
-        command,
-        shell=True,
-        cwd=workspace,
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        text=True,
-        errors="replace",
-        timeout=30,
-        env={key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL") if key in os.environ},
-    )
-    return {"stdout": result.stdout, "stderr": result.stderr, "exit_code": result.returncode}
+    environment = {key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL") if key in os.environ}
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        process = subprocess.Popen(
+            command,
+            shell=True,
+            cwd=workspace,
+            stdin=subprocess.DEVNULL,
+            stdout=stdout,
+            stderr=stderr,
+            env=environment,
+            start_new_session=True,
+        )
+        timed_out = False
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+        finally:
+            # Linux/macOS/WSL. No background session survives a tool invocation.
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+        result = {}
+        for name, stream in (("stdout", stdout), ("stderr", stderr)):
+            stream.seek(0)
+            raw = stream.read(MAX_OUTPUT + 1)
+            text = raw[:MAX_OUTPUT].decode("utf-8", errors="replace")
+            result[name] = text + ("\n[output truncated]" if len(raw) > MAX_OUTPUT else "")
+        result["exit_code"] = process.returncode
+        if timed_out:
+            result["error"] = f"Таймаут команды: {timeout} секунд"
+        return result
 
 
 def execute_tool(call, workspace):
-    function = call["function"]
-    if function["name"] != "shell":
-        return {"error": "Неизвестный инструмент"}
-    arguments = json.loads(function["arguments"])
-    print(f"shell: {arguments['command']}")
-    result = run_shell(arguments["command"], workspace)
-    print(json.dumps(result, ensure_ascii=False))
-    return result
+    try:
+        function = call["function"]
+        if function["name"] != "shell":
+            return {"error": "Неизвестный инструмент"}
+        arguments = json.loads(function["arguments"])
+        if not isinstance(arguments, dict) or set(arguments) != {"command"}:
+            return {"error": "Ожидается объект только с полем command"}
+        command = arguments["command"]
+        if not isinstance(command, str) or not command.strip():
+            return {"error": "command должен быть непустой строкой"}
+        print(f"shell: {command}")
+        result = run_shell(command, workspace)
+        print(json.dumps(result, ensure_ascii=False))
+        return result
+    except (KeyError, ValueError, TypeError, OSError) as exc:
+        return {"error": f"Инструмент не выполнен: {type(exc).__name__}"}
 
 
 def tool_result(call, result):
@@ -100,12 +159,15 @@ def tool_result(call, result):
 
 def agent_loop(messages, workspace, max_steps=20):
     for step in range(1, max_steps + 1):
+        if len(json.dumps(messages, ensure_ascii=False)) > 150000:
+            raise RuntimeError("История слишком велика. Начните новый диалог.")
         print(f"step: {step}")
         response = ask_model(messages)
         messages.append(response)
         calls = response.get("tool_calls") or []
         if not calls:
             print(response.get("content") or "(нет текста)")
+            print("stop: final_answer (корректность проверяется отдельно)")
             return response
         for call in calls:
             result = execute_tool(call, workspace)
@@ -130,16 +192,22 @@ def chat(workspace):
         if not question:
             continue
         messages.append({"role": "user", "content": question})
-        agent_loop(messages, workspace)
+        try:
+            agent_loop(messages, workspace)
+        except (RuntimeError, httpx.HTTPError, KeyboardInterrupt) as exc:
+            print(f"stop: interrupted_or_error ({type(exc).__name__}). История очищена.")
+            messages.clear()
 
 
 def main():
     load_dotenv(ROOT / ".env")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("prompt", nargs="?")
-    parser.add_argument("--workspace", type=Path, default=Path.cwd())
+    parser.add_argument("--workspace", type=Path, required=True)
     args = parser.parse_args()
     workspace = args.workspace.resolve(strict=True)
+    if not workspace.is_dir() or workspace in (ROOT, Path.home(), Path("/")):
+        parser.error("Укажите отдельную копию учебного проекта, созданную prepare_demo.py")
     if args.prompt is None:
         chat(workspace)
         return
@@ -147,4 +215,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (RuntimeError, ValueError, OSError, httpx.HTTPError) as exc:
+        print(f"stop: error ({type(exc).__name__}): {exc}")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("stop: cancelled")
+        sys.exit(130)
