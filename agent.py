@@ -1,7 +1,8 @@
-"""Step 01: one HTTP request, one model response. No agent loop yet."""
+"""Step 02: conversation history. The human still drives every turn."""
 
 import argparse
 import os
+import readline  # noqa: F401 - enables Unicode-aware terminal editing for input()
 from pathlib import Path
 
 import httpx
@@ -32,11 +33,36 @@ def ask_model(messages):
     return response.json()["choices"][0]["message"]
 
 
+def chat():
+    messages = []
+    while True:
+        try:
+            question = input("Ты> ").strip()
+            question.encode("utf-8")  # Reject damaged input before adding it to history.
+        except (EOFError, KeyboardInterrupt):
+            return
+        except UnicodeError:
+            print('error: "Некорректный текст UTF-8; сообщение не отправлено"')
+            print('help: "Повторите ввод сообщения"')
+            continue
+        if question == "/quit":
+            return
+        if not question:
+            continue
+        messages.append({"role": "user", "content": question})
+        response = ask_model(messages)
+        messages.append(response)
+        print(response.get("content") or "(нет текста)")
+
+
 def main():
     load_dotenv(ROOT / ".env")
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("prompt")
+    parser.add_argument("prompt", nargs="?")
     args = parser.parse_args()
+    if args.prompt is None:
+        chat()
+        return
     response = ask_model([{"role": "user", "content": args.prompt}])
     print(response.get("content") or "(нет текста)")
 

@@ -47,3 +47,18 @@ def test_key_required_before_network(monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
         agent.ask_model([])
+
+
+def test_chat_keeps_history(monkeypatch):
+    questions = iter(["Привет", "Продолжи", "/quit"])
+    monkeypatch.setattr("builtins.input", lambda _: next(questions))
+    snapshots = []
+
+    def ask(messages):
+        snapshots.append([dict(message) for message in messages])
+        return {"role": "assistant", "content": "Ответ"}
+
+    monkeypatch.setattr(agent, "ask_model", ask)
+    agent.chat()
+    assert [m["role"] for m in snapshots[1]] == ["user", "assistant", "user"]
+    assert snapshots[1][0]["content"] == "Привет"
