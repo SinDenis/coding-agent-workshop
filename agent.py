@@ -1,4 +1,4 @@
-"""Step 05: send tool results back. Two explicit requests, not a loop yet."""
+"""Step 06: the agent loop replaces manually repeated model calls."""
 
 import argparse
 import json
@@ -12,7 +12,14 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent
 MODEL = "deepseek/deepseek-v4-flash-0731"
-SYSTEM = "Ты помощник программиста. Отвечай кратко по-русски."
+SYSTEM = """Ты кодинговый агент в учебном проекте. Отвечай по-русски.
+Изучи файлы перед правками. Используй shell для работы с проектом.
+Команды уже запускаются в папке проекта. Используй относительные пути, не угадывай cwd.
+Не меняй исходные тесты, чтобы скрыть ошибку. После правок запусти тесты.
+Не утверждай, что проверка прошла, если не запускал её. В конце сообщи результат.
+Не читай секреты, не обращайся за пределы рабочей папки и не используй сеть.
+Для временных файлов используй текущую папку, не /tmp. Не делай лишних проверок.
+"""
 TOOLS = [
     {
         "type": "function",
@@ -91,21 +98,19 @@ def tool_result(call, result):
     }
 
 
-def run_turn(messages, workspace):
-    response = ask_model(messages)
-    messages.append(response)
-    show_response(response)
-    calls = response.get("tool_calls") or []
-    if not calls:
-        return response
-    for call in calls:
-        result = execute_tool(call, workspace)
-        messages.append(tool_result(call, result))
-    # We have manually copied the model call. What if a third call is needed?
-    response = ask_model(messages)
-    messages.append(response)
-    show_response(response)
-    return response
+def agent_loop(messages, workspace, max_steps=20):
+    for step in range(1, max_steps + 1):
+        print(f"step: {step}")
+        response = ask_model(messages)
+        messages.append(response)
+        calls = response.get("tool_calls") or []
+        if not calls:
+            print(response.get("content") or "(нет текста)")
+            return response
+        for call in calls:
+            result = execute_tool(call, workspace)
+            messages.append(tool_result(call, result))
+    raise RuntimeError("Достигнут лимит шагов. Это не успешное завершение задачи.")
 
 
 def chat(workspace):
@@ -125,10 +130,7 @@ def chat(workspace):
         if not question:
             continue
         messages.append({"role": "user", "content": question})
-        response = run_turn(messages, workspace)
-        if response.get("tool_calls"):
-            print("Нужен ещё шаг, но пока умеем только два запроса. Останавливаемся.")
-            return
+        agent_loop(messages, workspace)
 
 
 def main():
@@ -141,7 +143,7 @@ def main():
     if args.prompt is None:
         chat(workspace)
         return
-    run_turn([{"role": "user", "content": args.prompt}], workspace)
+    agent_loop([{"role": "user", "content": args.prompt}], workspace)
 
 
 if __name__ == "__main__":

@@ -105,8 +105,35 @@ def test_feedback_sends_matching_tool_result(monkeypatch, tmp_path):
 
     monkeypatch.setattr(agent, "ask_model", ask)
     history = [{"role": "user", "content": "Привет"}]
-    agent.run_turn(history, tmp_path)
+    agent.agent_loop(history, tmp_path)
     assert [m["role"] for m in snapshots[1]] == ["user", "assistant", "tool"]
     result = snapshots[1][-1]
     assert result["tool_call_id"] == "call_1"
     assert json.loads(result["content"])["stdout"] == "hello"
+
+
+def test_loop_handles_more_than_two_requests(monkeypatch, tmp_path):
+    answers = iter(
+        [
+            {"role": "assistant", "tool_calls": [tool_call(call_id="a"), tool_call(call_id="b")]},
+            {"role": "assistant", "tool_calls": [tool_call(call_id="c")]},
+            {"role": "assistant", "content": "Готово"},
+        ]
+    )
+    monkeypatch.setattr(agent, "ask_model", lambda _: next(answers))
+    history = []
+    assert agent.agent_loop(history, tmp_path)["content"] == "Готово"
+    assert [m["tool_call_id"] for m in history if m["role"] == "tool"] == ["a", "b", "c"]
+
+
+def test_loop_has_a_hard_limit(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        agent,
+        "ask_model",
+        lambda _: {
+            "role": "assistant",
+            "tool_calls": [tool_call()],
+        },
+    )
+    with pytest.raises(RuntimeError, match="лимит шагов"):
+        agent.agent_loop([], tmp_path, max_steps=2)
