@@ -1,9 +1,10 @@
-"""Step 03: describe a tool. Print the request, but do not execute it."""
+"""Step 04: the model requests, Python executes. No feedback to the model yet."""
 
 import argparse
 import json
 import os
 import readline  # noqa: F401 - enables Unicode-aware terminal editing for input()
+import subprocess
 from pathlib import Path
 
 import httpx
@@ -55,7 +56,43 @@ def show_response(response):
     print(json.dumps(response, ensure_ascii=False, indent=2))
 
 
-def chat():
+def run_shell(command, workspace):
+    # This is NOT a sandbox. cwd is a starting directory, not an access boundary.
+    result = subprocess.run(
+        command,
+        shell=True,
+        cwd=workspace,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        errors="replace",
+        timeout=30,
+        env={key: os.environ[key] for key in ("PATH", "LANG", "LC_ALL") if key in os.environ},
+    )
+    return {"stdout": result.stdout, "stderr": result.stderr, "exit_code": result.returncode}
+
+
+def execute_tool(call, workspace):
+    function = call["function"]
+    if function["name"] != "shell":
+        return {"error": "Неизвестный инструмент"}
+    arguments = json.loads(function["arguments"])
+    print(f"shell: {arguments['command']}")
+    result = run_shell(arguments["command"], workspace)
+    print(json.dumps(result, ensure_ascii=False))
+    return result
+
+
+def run_turn(messages, workspace):
+    response = ask_model(messages)
+    messages.append(response)
+    show_response(response)
+    for call in response.get("tool_calls") or []:
+        execute_tool(call, workspace)
+    return response
+
+
+def chat(workspace):
     messages = []
     while True:
         try:
@@ -72,11 +109,9 @@ def chat():
         if not question:
             continue
         messages.append({"role": "user", "content": question})
-        response = ask_model(messages)
-        messages.append(response)
-        show_response(response)
+        response = run_turn(messages, workspace)
         if response.get("tool_calls"):
-            print("Вызов показан, но исполнитель ещё не написан. Перезапустите для нового запроса.")
+            print("Команда выполнена. Модель ещё не получила результат. Здесь останавливаемся.")
             return
 
 
@@ -84,12 +119,13 @@ def main():
     load_dotenv(ROOT / ".env")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("prompt", nargs="?")
+    parser.add_argument("--workspace", type=Path, default=Path.cwd())
     args = parser.parse_args()
+    workspace = args.workspace.resolve(strict=True)
     if args.prompt is None:
-        chat()
+        chat(workspace)
         return
-    response = ask_model([{"role": "user", "content": args.prompt}])
-    show_response(response)
+    run_turn([{"role": "user", "content": args.prompt}], workspace)
 
 
 if __name__ == "__main__":

@@ -49,7 +49,7 @@ def test_key_required_before_network(monkeypatch):
         agent.ask_model([])
 
 
-def test_chat_keeps_history(monkeypatch):
+def test_chat_keeps_history(monkeypatch, tmp_path):
     questions = iter(["Привет", "Продолжи", "/quit"])
     monkeypatch.setattr("builtins.input", lambda _: next(questions))
     snapshots = []
@@ -59,7 +59,7 @@ def test_chat_keeps_history(monkeypatch):
         return {"role": "assistant", "content": "Ответ"}
 
     monkeypatch.setattr(agent, "ask_model", ask)
-    agent.chat()
+    agent.chat(tmp_path)
     assert [m["role"] for m in snapshots[1]] == ["user", "assistant", "user"]
     assert snapshots[1][0]["content"] == "Привет"
 
@@ -68,4 +68,16 @@ def test_tool_schema_is_only_data():
     tool = agent.TOOLS[0]["function"]
     assert tool["name"] == "shell"
     assert tool["parameters"]["required"] == ["command"]
-    assert not hasattr(agent, "run_shell")
+
+
+def test_shell_returns_real_output_exit_code_and_cwd(tmp_path):
+    (tmp_path / "hello.txt").write_text("hello", encoding="utf-8")
+    result = agent.run_shell("cat hello.txt; printf error >&2; exit 7", tmp_path)
+    assert result == {"stdout": "hello", "stderr": "error", "exit_code": 7}
+
+
+def test_shell_does_not_inherit_api_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "do-not-share")
+    result = agent.run_shell("printenv OPENROUTER_API_KEY", tmp_path)
+    assert "do-not-share" not in result["stdout"]
+    assert result["exit_code"] != 0
