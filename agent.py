@@ -1,4 +1,4 @@
-"""Step 10: /plan, revise, /approve, /cancel. The user controls the transition."""
+"""Step 11: complete workshop agent. See SEMINAR.md for the incremental route."""
 
 import argparse
 import json
@@ -108,14 +108,19 @@ def ask_model(messages, mode="act"):
         choice = response.json()["choices"][0]
         message = choice["message"]
         reason = choice["finish_reason"]
+        if not isinstance(message, dict):
+            raise ValueError("Ожидался объект сообщения")
         calls = message.get("tool_calls") or []
+        if not isinstance(calls, list):
+            raise ValueError("Ожидался список вызовов")
         if message.get("role") != "assistant":
             raise ValueError("Ожидалось сообщение assistant")
         if reason not in ("stop", "tool_calls"):
             raise RuntimeError(f"Ответ не завершён нормально: finish_reason={reason}")
         if reason == "tool_calls" and not calls:
             raise ValueError("Нет ожидаемых вызовов инструментов")
-        if not calls and not (message.get("content") or "").strip():
+        content = message.get("content")
+        if not calls and (not isinstance(content, str) or not content.strip()):
             raise ValueError("Модель вернула пустой ответ")
         ids = [call["id"] for call in calls]
         if len(set(ids)) != len(ids) or any(not isinstance(i, str) or not i for i in ids):
@@ -127,10 +132,6 @@ def ask_model(messages, mode="act"):
         return message
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         raise RuntimeError("Некорректный ответ OpenRouter; выполнение остановлено") from exc
-
-
-def show_response(response):
-    print(json.dumps(response, ensure_ascii=False, indent=2))
 
 
 def run_shell(command, workspace, timeout=30):
@@ -316,7 +317,8 @@ def chat(workspace, mode="act"):
                 plan_ready = True
                 print("pending: уточните план, /approve для выполнения, /cancel для отмены")
         except (RuntimeError, ValueError, OSError, httpx.HTTPError, KeyboardInterrupt) as exc:
-            print(f"stop: interrupted_or_error ({type(exc).__name__}). История очищена.")
+            print(f"stop: interrupted_or_error ({type(exc).__name__}): {exc}")
+            print("История очищена; старый план больше нельзя подтвердить.")
             messages.clear()
 
 

@@ -1,3 +1,4 @@
+import json
 import subprocess
 import sys
 
@@ -35,3 +36,13 @@ def test_tracker_rejects_unknown_flags(tmp_path):
     )
     assert result.returncode == 2
     assert "error:" in result.stdout
+
+
+def test_tracker_home_view_has_valid_quoted_help(tmp_path):
+    demo = prepare(tmp_path)
+    result = subprocess.run(
+        [sys.executable, str(demo / "tasks.py")], capture_output=True, text=True, timeout=5
+    )
+    assert result.returncode == 0
+    help_line = next(line for line in result.stdout.splitlines() if line.startswith("help:"))
+    assert "--command" in json.loads(help_line.removeprefix("help: "))
