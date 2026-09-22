@@ -81,3 +81,32 @@ def test_shell_does_not_inherit_api_key(monkeypatch, tmp_path):
     result = agent.run_shell("printenv OPENROUTER_API_KEY", tmp_path)
     assert "do-not-share" not in result["stdout"]
     assert result["exit_code"] != 0
+
+
+def tool_call(command="printf hello", call_id="call_1"):
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {
+            "name": "shell",
+            "arguments": json.dumps({"command": command}),
+        },
+    }
+
+
+def test_feedback_sends_matching_tool_result(monkeypatch, tmp_path):
+    snapshots = []
+
+    def ask(messages):
+        snapshots.append([dict(message) for message in messages])
+        if len(snapshots) == 1:
+            return {"role": "assistant", "content": None, "tool_calls": [tool_call()]}
+        return {"role": "assistant", "content": "Готово"}
+
+    monkeypatch.setattr(agent, "ask_model", ask)
+    history = [{"role": "user", "content": "Привет"}]
+    agent.run_turn(history, tmp_path)
+    assert [m["role"] for m in snapshots[1]] == ["user", "assistant", "tool"]
+    result = snapshots[1][-1]
+    assert result["tool_call_id"] == "call_1"
+    assert json.loads(result["content"])["stdout"] == "hello"

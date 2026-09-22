@@ -1,4 +1,4 @@
-"""Step 04: the model requests, Python executes. No feedback to the model yet."""
+"""Step 05: send tool results back. Two explicit requests, not a loop yet."""
 
 import argparse
 import json
@@ -83,12 +83,28 @@ def execute_tool(call, workspace):
     return result
 
 
+def tool_result(call, result):
+    return {
+        "role": "tool",
+        "tool_call_id": call["id"],
+        "content": json.dumps(result, ensure_ascii=False),
+    }
+
+
 def run_turn(messages, workspace):
     response = ask_model(messages)
     messages.append(response)
     show_response(response)
-    for call in response.get("tool_calls") or []:
-        execute_tool(call, workspace)
+    calls = response.get("tool_calls") or []
+    if not calls:
+        return response
+    for call in calls:
+        result = execute_tool(call, workspace)
+        messages.append(tool_result(call, result))
+    # We have manually copied the model call. What if a third call is needed?
+    response = ask_model(messages)
+    messages.append(response)
+    show_response(response)
     return response
 
 
@@ -111,7 +127,7 @@ def chat(workspace):
         messages.append({"role": "user", "content": question})
         response = run_turn(messages, workspace)
         if response.get("tool_calls"):
-            print("Команда выполнена. Модель ещё не получила результат. Здесь останавливаемся.")
+            print("Нужен ещё шаг, но пока умеем только два запроса. Останавливаемся.")
             return
 
 
