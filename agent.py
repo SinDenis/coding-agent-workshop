@@ -1,4 +1,4 @@
-"""Step 09: Plan Mode exposes only scoped read tools and enforces permissions."""
+"""Step 10: /plan, revise, /approve, /cancel. The user controls the transition."""
 
 import argparse
 import json
@@ -272,9 +272,11 @@ def agent_loop(messages, workspace, max_steps=20, mode="act"):
 
 def chat(workspace, mode="act"):
     messages = []
+    plan_ready = False
+    print("Команды: /plan, /approve, /cancel, /quit. Shell выполняется на вашем компьютере.")
     while True:
         try:
-            question = input("Ты> ").strip()
+            question = input(f"Ты [{mode}]> ").strip()
             question.encode("utf-8")  # Reject damaged input before adding it to history.
         except (EOFError, KeyboardInterrupt):
             return
@@ -286,10 +288,34 @@ def chat(workspace, mode="act"):
             return
         if not question:
             continue
+        if question == "/plan":
+            mode, plan_ready = "plan", False
+            messages.clear()
+            print("mode: plan. Новый диалог. Опишите задачу; изменения запрещены.")
+            continue
+        if question == "/cancel":
+            mode, plan_ready = "act", False
+            messages.clear()
+            print("stop: cancelled. План отброшен, выполнение не запущено.")
+            continue
+        if question == "/approve":
+            if mode != "plan" or not plan_ready:
+                print("error: нет последнего плана для подтверждения")
+                continue
+            mode = "act"
+            question = "Подтверждаю последний показанный план. Выполни его и проверь результат."
+        elif question.startswith("/"):
+            print("error: неизвестная команда; доступны /plan, /approve, /cancel, /quit")
+            continue
+        # Any revision invalidates earlier approval readiness, including on API failures.
+        plan_ready = False
         messages.append({"role": "user", "content": question})
         try:
             agent_loop(messages, workspace, mode=mode)
-        except (RuntimeError, httpx.HTTPError, KeyboardInterrupt) as exc:
+            if mode == "plan":
+                plan_ready = True
+                print("pending: уточните план, /approve для выполнения, /cancel для отмены")
+        except (RuntimeError, ValueError, OSError, httpx.HTTPError, KeyboardInterrupt) as exc:
             print(f"stop: interrupted_or_error ({type(exc).__name__}). История очищена.")
             messages.clear()
 
