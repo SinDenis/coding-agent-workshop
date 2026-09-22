@@ -92,7 +92,7 @@ def test_bad_arguments_are_tool_errors(tmp_path, arguments):
 
 
 def test_overlong_history_is_rejected_before_api(monkeypatch, tmp_path):
-    monkeypatch.setattr(agent, "ask_model", lambda _: pytest.fail("must not call API"))
+    monkeypatch.setattr(agent, "ask_model", lambda _, mode="act": pytest.fail("must not call API"))
     with pytest.raises(RuntimeError, match="История"):
         agent.agent_loop([{"role": "user", "content": "x" * 150001}], tmp_path)
 
@@ -112,7 +112,7 @@ def test_two_tool_calls_stay_paired_on_error(monkeypatch, tmp_path):
             {"role": "assistant", "content": "Не получилось"},
         ]
     )
-    monkeypatch.setattr(agent, "ask_model", lambda _: next(answers))
+    monkeypatch.setattr(agent, "ask_model", lambda _, mode="act": next(answers))
     messages = []
     agent.agent_loop(messages, tmp_path)
     assert messages[1]["tool_call_id"] == "broken"

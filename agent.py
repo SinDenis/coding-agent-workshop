@@ -1,4 +1,4 @@
-"""Step 07: explicit stop reasons, validation, bounded tools and readable errors."""
+"""Step 08: a prompt-only Plan Mode is a request, not an enforced boundary."""
 
 import argparse
 import json
@@ -24,6 +24,11 @@ SYSTEM = """Ты кодинговый агент в учебном проект�
 Не читай секреты, не обращайся за пределы рабочей папки и не используй сеть.
 Для временных файлов используй текущую папку, не /tmp. Не делай лишних проверок.
 """
+PLAN_PROMPT = """Ты планируешь изменение учебного проекта. Отвечай по-русски.
+Изучи проект, задай вопросы при неясности, затем предложи конкретный план.
+План краткий: до 6 пунктов, без кода реализации. Используй path="." для корня проекта.
+Не изменяй файлы и не запускай команды, меняющие состояние. Жди подтверждения человека.
+"""
 TOOLS = [
     {
         "type": "function",
@@ -41,7 +46,7 @@ TOOLS = [
 ]
 
 
-def ask_model(messages):
+def ask_model(messages, mode="act"):
     """The entire model call is visible: URL, headers, JSON and response."""
     key = os.environ.get("OPENROUTER_API_KEY")
     if not key:
@@ -51,7 +56,10 @@ def ask_model(messages):
         headers={"Authorization": f"Bearer {key}"},
         json={
             "model": os.getenv("OPENROUTER_MODEL", MODEL),
-            "messages": [{"role": "system", "content": SYSTEM}, *messages],
+            "messages": [
+                {"role": "system", "content": PLAN_PROMPT if mode == "plan" else SYSTEM},
+                *messages,
+            ],
             "max_tokens": 4096,
             "reasoning": {"enabled": False},
             "tools": TOOLS,
@@ -157,12 +165,12 @@ def tool_result(call, result):
     }
 
 
-def agent_loop(messages, workspace, max_steps=20):
+def agent_loop(messages, workspace, max_steps=20, mode="act"):
     for step in range(1, max_steps + 1):
         if len(json.dumps(messages, ensure_ascii=False)) > 150000:
             raise RuntimeError("История слишком велика. Начните новый диалог.")
         print(f"step: {step}")
-        response = ask_model(messages)
+        response = ask_model(messages, mode)
         messages.append(response)
         calls = response.get("tool_calls") or []
         if not calls:
@@ -175,7 +183,7 @@ def agent_loop(messages, workspace, max_steps=20):
     raise RuntimeError("Достигнут лимит шагов. Это не успешное завершение задачи.")
 
 
-def chat(workspace):
+def chat(workspace, mode="act"):
     messages = []
     while True:
         try:
@@ -193,7 +201,7 @@ def chat(workspace):
             continue
         messages.append({"role": "user", "content": question})
         try:
-            agent_loop(messages, workspace)
+            agent_loop(messages, workspace, mode=mode)
         except (RuntimeError, httpx.HTTPError, KeyboardInterrupt) as exc:
             print(f"stop: interrupted_or_error ({type(exc).__name__}). История очищена.")
             messages.clear()
@@ -204,14 +212,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("prompt", nargs="?")
     parser.add_argument("--workspace", type=Path, required=True)
+    parser.add_argument("--plan", action="store_true", help="Планирование (пока только промпт)")
     args = parser.parse_args()
     workspace = args.workspace.resolve(strict=True)
     if not workspace.is_dir() or workspace in (ROOT, Path.home(), Path("/")):
         parser.error("Укажите отдельную копию учебного проекта, созданную prepare_demo.py")
     if args.prompt is None:
-        chat(workspace)
+        chat(workspace, mode="plan" if args.plan else "act")
         return
-    agent_loop([{"role": "user", "content": args.prompt}], workspace)
+    agent_loop(
+        [{"role": "user", "content": args.prompt}], workspace, mode="plan" if args.plan else "act"
+    )
 
 
 if __name__ == "__main__":

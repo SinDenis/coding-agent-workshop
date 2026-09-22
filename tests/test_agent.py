@@ -54,7 +54,7 @@ def test_chat_keeps_history(monkeypatch, tmp_path):
     monkeypatch.setattr("builtins.input", lambda _: next(questions))
     snapshots = []
 
-    def ask(messages):
+    def ask(messages, mode="act"):
         snapshots.append([dict(message) for message in messages])
         return {"role": "assistant", "content": "Ответ"}
 
@@ -97,7 +97,7 @@ def tool_call(command="printf hello", call_id="call_1"):
 def test_feedback_sends_matching_tool_result(monkeypatch, tmp_path):
     snapshots = []
 
-    def ask(messages):
+    def ask(messages, mode="act"):
         snapshots.append([dict(message) for message in messages])
         if len(snapshots) == 1:
             return {"role": "assistant", "content": None, "tool_calls": [tool_call()]}
@@ -120,7 +120,7 @@ def test_loop_handles_more_than_two_requests(monkeypatch, tmp_path):
             {"role": "assistant", "content": "Готово"},
         ]
     )
-    monkeypatch.setattr(agent, "ask_model", lambda _: next(answers))
+    monkeypatch.setattr(agent, "ask_model", lambda _, mode="act": next(answers))
     history = []
     assert agent.agent_loop(history, tmp_path)["content"] == "Готово"
     assert [m["tool_call_id"] for m in history if m["role"] == "tool"] == ["a", "b", "c"]
@@ -130,7 +130,7 @@ def test_loop_has_a_hard_limit(monkeypatch, tmp_path):
     monkeypatch.setattr(
         agent,
         "ask_model",
-        lambda _: {
+        lambda _, mode="act": {
             "role": "assistant",
             "tool_calls": [tool_call()],
         },
