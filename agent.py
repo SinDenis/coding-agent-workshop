@@ -1,4 +1,4 @@
-"""Step 08: a prompt-only Plan Mode is a request, not an enforced boundary."""
+"""Step 09: Plan Mode exposes only scoped read tools and enforces permissions."""
 
 import argparse
 import json
@@ -44,6 +44,39 @@ TOOLS = [
         },
     }
 ]
+READ_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "list_files",
+            "description": "Показать файлы папки внутри учебного проекта.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Прочитать текстовый файл внутри учебного проекта.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+        },
+    },
+]
+
+
+def get_tools(mode):
+    if mode not in ("plan", "act"):
+        raise ValueError("Неизвестный режим")
+    return READ_TOOLS if mode == "plan" else TOOLS
 
 
 def ask_model(messages, mode="act"):
@@ -62,7 +95,7 @@ def ask_model(messages, mode="act"):
             ],
             "max_tokens": 4096,
             "reasoning": {"enabled": False},
-            "tools": TOOLS,
+            "tools": get_tools(mode),
             "provider": {"require_parameters": True},
         },
         timeout=60,
@@ -138,12 +171,66 @@ def run_shell(command, workspace, timeout=30):
         return result
 
 
-def execute_tool(call, workspace):
+def project_path(workspace, relative):
+    if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
+        raise ValueError("Нужен относительный путь")
+    if any(part.startswith(".") and part != "." for part in Path(relative).parts):
+        raise ValueError("Скрытые файлы и переходы вверх запрещены")
+    root = workspace.resolve()
+    path = (root / relative).resolve(strict=True)
+    if not path.is_relative_to(root):
+        raise ValueError("Путь выходит за рабочую папку")
+    # Resolving a symlink to .env inside the workspace must not bypass the hidden-file rule.
+    if any(part.startswith(".") for part in path.relative_to(root).parts):
+        raise ValueError("Скрытый файл недоступен")
+    return path
+
+
+def read_file(workspace, path):
+    target = project_path(workspace, path)
+    if not target.is_file():
+        raise ValueError("Ожидался обычный файл")
+    with target.open("rb") as stream:
+        raw = stream.read(MAX_OUTPUT + 1)
+    return {
+        "text": raw[:MAX_OUTPUT].decode("utf-8", errors="replace"),
+        "truncated": len(raw) > MAX_OUTPUT,
+    }
+
+
+def list_files(workspace, path="."):
+    target = project_path(workspace, path)
+    if not target.is_dir():
+        raise ValueError("Ожидалась папка")
+    entries = sorted(
+        p.name + ("/" if p.is_dir() else "")
+        for p in target.iterdir()
+        if not p.name.startswith(".") and not p.is_symlink()
+    )
+    return {"entries": entries[:100], "total": len(entries)}
+
+
+def execute_tool(call, workspace, mode="act"):
     try:
         function = call["function"]
-        if function["name"] != "shell":
-            return {"error": "Неизвестный инструмент"}
+        allowed = {tool["function"]["name"] for tool in get_tools(mode)}
+        name = function["name"]
+        if name not in allowed:
+            return {"error": f"Инструмент {name} запрещён в режиме {mode}"}
         arguments = json.loads(function["arguments"])
+        if name in ("read_file", "list_files"):
+            required = {"path"} if name == "read_file" else set()
+            if (
+                not isinstance(arguments, dict)
+                or set(arguments) - {"path"}
+                or not required.issubset(arguments)
+            ):
+                return {"error": "Ожидается аргумент path"}
+            print(f"{name}: {arguments}")
+            handler = read_file if name == "read_file" else list_files
+            result = handler(workspace, **arguments)
+            print(json.dumps(result, ensure_ascii=False))
+            return result
         if not isinstance(arguments, dict) or set(arguments) != {"command"}:
             return {"error": "Ожидается объект только с полем command"}
         command = arguments["command"]
@@ -178,7 +265,7 @@ def agent_loop(messages, workspace, max_steps=20, mode="act"):
             print("stop: final_answer (корректность проверяется отдельно)")
             return response
         for call in calls:
-            result = execute_tool(call, workspace)
+            result = execute_tool(call, workspace, mode)
             messages.append(tool_result(call, result))
     raise RuntimeError("Достигнут лимит шагов. Это не успешное завершение задачи.")
 
@@ -212,7 +299,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("prompt", nargs="?")
     parser.add_argument("--workspace", type=Path, required=True)
-    parser.add_argument("--plan", action="store_true", help="Планирование (пока только промпт)")
+    parser.add_argument("--plan", action="store_true", help="Только чтение и планирование")
     args = parser.parse_args()
     workspace = args.workspace.resolve(strict=True)
     if not workspace.is_dir() or workspace in (ROOT, Path.home(), Path("/")):
