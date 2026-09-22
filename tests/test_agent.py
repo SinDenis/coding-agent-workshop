@@ -62,3 +62,10 @@ def test_chat_keeps_history(monkeypatch):
     agent.chat()
     assert [m["role"] for m in snapshots[1]] == ["user", "assistant", "user"]
     assert snapshots[1][0]["content"] == "Привет"
+
+
+def test_tool_schema_is_only_data():
+    tool = agent.TOOLS[0]["function"]
+    assert tool["name"] == "shell"
+    assert tool["parameters"]["required"] == ["command"]
+    assert not hasattr(agent, "run_shell")

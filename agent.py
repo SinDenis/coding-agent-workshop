@@ -1,6 +1,7 @@
-"""Step 02: conversation history. The human still drives every turn."""
+"""Step 03: describe a tool. Print the request, but do not execute it."""
 
 import argparse
+import json
 import os
 import readline  # noqa: F401 - enables Unicode-aware terminal editing for input()
 from pathlib import Path
@@ -11,6 +12,21 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent
 MODEL = "deepseek/deepseek-v4-flash-0731"
 SYSTEM = "Ты помощник программиста. Отвечай кратко по-русски."
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "shell",
+            "description": "Выполнить команду в рабочей папке проекта.",
+            "parameters": {
+                "type": "object",
+                "properties": {"command": {"type": "string"}},
+                "required": ["command"],
+                "additionalProperties": False,
+            },
+        },
+    }
+]
 
 
 def ask_model(messages):
@@ -26,11 +42,17 @@ def ask_model(messages):
             "messages": [{"role": "system", "content": SYSTEM}, *messages],
             "max_tokens": 4096,
             "reasoning": {"enabled": False},
+            "tools": TOOLS,
+            "provider": {"require_parameters": True},
         },
         timeout=60,
     )
     response.raise_for_status()
     return response.json()["choices"][0]["message"]
+
+
+def show_response(response):
+    print(json.dumps(response, ensure_ascii=False, indent=2))
 
 
 def chat():
@@ -52,7 +74,10 @@ def chat():
         messages.append({"role": "user", "content": question})
         response = ask_model(messages)
         messages.append(response)
-        print(response.get("content") or "(нет текста)")
+        show_response(response)
+        if response.get("tool_calls"):
+            print("Вызов показан, но исполнитель ещё не написан. Перезапустите для нового запроса.")
+            return
 
 
 def main():
@@ -64,7 +89,7 @@ def main():
         chat()
         return
     response = ask_model([{"role": "user", "content": args.prompt}])
-    print(response.get("content") or "(нет текста)")
+    show_response(response)
 
 
 if __name__ == "__main__":
